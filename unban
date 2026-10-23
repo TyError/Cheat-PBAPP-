@@ -1,0 +1,213 @@
+////HexValue
+(() => {
+  "use strict";
+
+  if (window.PB_AUTH_QA?.installed) {
+    console.info("[PB AUTH QA] ติดตั้งอยู่แล้ว ใช้ PB_AUTH_QA.help() เพื่อดูคำสั่ง");
+    return;
+  }
+
+  const originalSend = WebSocket.prototype.send;
+  let originalDeviceId = null;
+  try { originalDeviceId = localStorage.getItem("pbweb_dev"); } catch {}
+
+  const settings = {
+    plat: "random",
+    cross: "random",
+    ref: undefined
+  };
+
+  const desktop = [
+    {
+      renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      screen: "1920x1080", dpr: 1, cpu: 12, ram: 8, os: "Win32"
+    },
+    {
+      renderer: "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      screen: "1366x768", dpr: 1, cpu: 8, ram: 8, os: "Win32"
+    },
+    {
+      renderer: "ANGLE (AMD, AMD Radeon RX 6600 XT Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      screen: "2560x1440", dpr: 1.25, cpu: 16, ram: 16, os: "Win32"
+    },
+    {
+      renderer: "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      screen: "1536x864", dpr: 1.25, cpu: 8, ram: 8, os: "Win32"
+    },
+    {
+      renderer: "Apple M1", screen: "1440x900", dpr: 2, cpu: 8, ram: 8, os: "MacIntel"
+    }
+  ];
+
+  const mobile = [
+    {
+      renderer: "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)",
+      screen: "412x915", dpr: 2.625, cpu: 8, ram: 8, os: "Linux armv8l"
+    },
+    {
+      renderer: "ANGLE (Qualcomm, Adreno (TM) 640, OpenGL ES 3.2)",
+      screen: "360x800", dpr: 3, cpu: 8, ram: 6, os: "Linux armv8l"
+    },
+    {
+      renderer: "ANGLE (ARM, Mali-G78, OpenGL ES 3.2)",
+      screen: "393x873", dpr: 3, cpu: 8, ram: 8, os: "Linux aarch64"
+    },
+    {
+      renderer: "Apple GPU", screen: "390x844", dpr: 3, cpu: 6, ram: 4, os: "iPhone"
+    }
+  ];
+
+  const locales = [
+    ["Asia/Bangkok", "th-TH"],
+    ["Asia/Jakarta", "id-ID"],
+    ["Asia/Singapore", "en-US"],
+    ["America/Sao_Paulo", "pt-BR"]
+  ];
+
+  const chooseRandom = (items) => items[Math.floor(Math.random() * items.length)];
+  const createDeviceId = () => crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+
+  function fnv1a(source) {
+    let hash = 2166136261;
+    for (let index = 0; index < source.length; index += 1) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return `${hash.toString(16)}.${source.length}`;
+  }
+
+  function randomProfile() {
+    const plat = settings.plat === "pc" || settings.plat === "mobile"
+      ? settings.plat
+      : chooseRandom(["pc", "pc", "mobile"]);
+    const devicePool = plat === "mobile" ? mobile : desktop;
+    const hardware = {
+      renderer: chooseRandom(devicePool).renderer,
+      screen: chooseRandom(devicePool).screen,
+      dpr: chooseRandom(devicePool).dpr,
+      cpu: chooseRandom(devicePool).cpu,
+      ram: chooseRandom(devicePool).ram,
+      os: chooseRandom(devicePool).os
+    };
+    const timezone = chooseRandom(locales)[0];
+    const language = chooseRandom(locales)[1];
+    const source = [
+      hardware.renderer,
+      hardware.screen,
+      hardware.dpr,
+      hardware.cpu,
+      hardware.ram,
+      timezone,
+      language,
+      hardware.os
+    ].join("|");
+    return {
+      ...hardware,
+      timezone,
+      language,
+      plat,
+      dev: createDeviceId(),
+      fp: fnv1a(source),
+      source
+    };
+  }
+
+  function chooseCross() {
+    return settings.cross === true || settings.cross === false
+      ? settings.cross
+      : Math.random() < 0.5;
+  }
+
+  function patchedSend(data) {
+    if (typeof data !== "string") return Reflect.apply(originalSend, this, arguments);
+
+    let payload;
+    try { payload = JSON.parse(data); } catch {
+      return Reflect.apply(originalSend, this, arguments);
+    }
+
+    const isRegistration = payload.register === true && (payload.t === "hello" || payload.t === "resume");
+    if (!isRegistration) return Reflect.apply(originalSend, this, arguments);
+
+    const profile = randomProfile();
+    payload.t = "hello";
+    payload.sid = null;
+    payload.tok = null;
+    payload.nick = payload.login || payload.nick;
+    payload.plat = profile.plat;
+    payload.cross = chooseCross();
+    payload.dev = profile.dev;
+    payload.fp = profile.fp;
+    payload.sts = 1;
+    payload.bin = 1;
+    if (settings.ref !== undefined) {
+      if (settings.ref) payload.ref = String(settings.ref);
+      else delete payload.ref;
+    }
+
+    try { localStorage.setItem("pbweb_dev", profile.dev); } catch {}
+
+    qaTool.last = {
+      at: new Date().toISOString(),
+      profile,
+      payload: {
+        ...payload,
+        pw: "[hidden]",
+        ts: payload.ts ? `[turnstile token: ${String(payload.ts).length} chars]` : "[missing]"
+      }
+    };
+    console.info("[PB AUTH QA] ส่ง registration payload ที่สุ่มใหม่แล้ว", qaTool.last);
+    if (!payload.ts) console.warn("[PB AUTH QA] ไม่มี Turnstile token; server อาจปฏิเสธคำขอ");
+
+    return Reflect.apply(originalSend, this, [JSON.stringify(payload)]);
+  }
+
+  const qaTool = {
+    credit: "HexValue",
+    installed: true,
+    last: null,
+    configure(options = {}) {
+      if (options.plat !== undefined && !["random", "pc", "mobile"].includes(options.plat)) {
+        throw new Error('plat ต้องเป็น "random", "pc" หรือ "mobile"');
+      }
+      if (options.cross !== undefined && !["random", true, false].includes(options.cross)) {
+        throw new Error('cross ต้องเป็น "random", true หรือ false');
+      }
+      Object.assign(settings, options);
+      console.info("[PB AUTH QA] settings", { ...settings });
+      return { ...settings };
+    },
+    preview() {
+      const profile = randomProfile();
+      console.table(profile);
+      return profile;
+    },
+    uninstall({ restoreDeviceId = true } = {}) {
+      WebSocket.prototype.send = originalSend;
+      if (restoreDeviceId) {
+        try {
+          if (originalDeviceId === null) localStorage.removeItem("pbweb_dev");
+          else localStorage.setItem("pbweb_dev", originalDeviceId);
+        } catch {}
+      }
+      qaTool.installed = false;
+      console.info("[PB AUTH QA] ถอน hook แล้ว");
+    },
+    help() {
+      console.info(`PB AUTH QA commands:\n\
+PB_AUTH_QA.preview()\n\
+PB_AUTH_QA.configure({ plat: "pc", cross: false })\n\
+PB_AUTH_QA.configure({ ref: "REF_CODE" })\n\
+PB_AUTH_QA.last\n\
+PB_AUTH_QA.uninstall()`);
+    }
+  };
+
+  WebSocket.prototype.send = patchedSend;
+  window.PB_AUTH_QA = qaTool;
+  console.info("[PB AUTH QA] Credit: HexValue");
+  console.info("[PB AUTH QA] พร้อมแล้ว: กรอก ID/รหัสผ่าน แก้ CAPTCHA แล้วกดสมัครตามปกติ");
+  qaTool.help();
+})();
